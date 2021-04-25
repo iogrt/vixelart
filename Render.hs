@@ -1,35 +1,47 @@
-module Render (renderFn, paintPixels) where
+{-# LANGUAGE NamedFieldPuns #-}
+module Render (renderFn, paintPixels, pointToPixel) where
 import Model
 import Graphics.Gloss.Data.Color
 import Data.Matrix
 import Graphics.Gloss.Data.Point (Path)
-import Graphics.Gloss.Data.Picture 
+import Graphics.Gloss.Data.Picture
 
 renderFn :: AppState -> Picture
-renderFn AppState {renderOptions = renderOpts, painting=px, cursor=cursorPos}  =
+renderFn AppState
+  { renderOptions = renderOpts,
+    painting=px,
+    cursor=cursorPos,
+    inputState
+  }  =
   -- order gives z axis
-  pictures (pixelsPicture ++ [cursorPicture])
+  pictures (pixelsPicture ++ [cursorPicture, exModePrompt])
   where
-    w = ncols px
     pixelsPicture = mapI (\color listIndex ->
-                    let (i,j) = quotRem listIndex w in
-                      drawPixel renderOpts (i,j) color
+                    let (i,j) = quotRem listIndex (ncols px) in
+                      drawPixel color renderOpts (i,j) 
                   )(toList px)
-    cursorPicture = lineLoop $ getRectPath renderOpts cursorPos
+
+    cursorPicture = lineLoop $ getRectPath renderOpts $
+      -- 1 because matrix is 1 based
+      mapTuple (subtract 1) cursorPos
+    exModePrompt =
+      case inputState of
+        InputEx (ExMode msg) ->
+          uncurry Translate (mapTuple (* (-1)) $ offset renderOpts)
+          $ Scale 0.1 0.1
+          $ Text (":" ++ msg)
+        _ -> Blank
 
 pixelToPoint :: RenderOptions -> (Int,Int) -> (Float,Float)
-pixelToPoint RenderOptions { pixelSize=size, offset=(offsetX,offsetY) } (i,j) =
+pixelToPoint RenderOptions { pixelSize, offset } =
   -- matrix is 1 based index, remove 1
-  ( fromIntegral ((i-1) * size) - offsetX
-  , fromIntegral ((j-1) * size) - offsetY
-  )
+  applyTuple subtract offset . mapTuple (fromIntegral.(* pixelSize).subtract 1)
 
 pointToPixel :: RenderOptions -> (Float,Float) -> (Int,Int)
-pointToPixel RenderOptions { pixelSize=size, offset=(offsetX,offsetY) } (x,y) =
-  -- matrix is 1 based index, add 1
-  (ceiling $ (x + offsetX + 1 ) / fromIntegral size
-  ,ceiling $ (y + offsetY + 1)  / fromIntegral size
-  )
+pointToPixel RenderOptions { pixelSize=size, offset } =
+  mapTuple (ceiling.(/ intSize).(+1)) . applyTuple (+) offset
+  where
+    intSize = fromIntegral size
 
 getRectPath :: RenderOptions -> (Int,Int) -> Path
 getRectPath renderOpts (i,j) =
@@ -39,13 +51,10 @@ getRectPath renderOpts (i,j) =
   where
     rectangle = [(0,0),(0,1),(1,1),(1,0)]
 
-drawPixel :: RenderOptions -> (Int,Int) -> Color -> Picture
-drawPixel renderOptions (i,j)  color =
-  Color color $ Polygon $ getRectPath renderOptions (i,j)
+drawPixel :: Color -> RenderOptions -> (Int,Int) ->  Picture
+drawPixel c =
+  Color c ... (Polygon ... getRectPath)
 
-paintPixels :: Color -> [(Int,Int)] -> Matrix Color -> Matrix Color
-paintPixels color posList matrix =
-  foldr setPixel matrix posList
-  where
-    -- matrix is 1 based index
-    setPixel pos = setElem color (mapTuple (+1) pos)
+paintPixels :: Color -> Matrix Color -> [(Int,Int)] ->  Matrix Color
+paintPixels =
+  foldr . setElem
